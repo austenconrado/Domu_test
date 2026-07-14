@@ -1,5 +1,6 @@
-import React, { useState, useMemo } from "react";
-import { Phone, PhoneCall, AlertTriangle, ShieldAlert, FileText, Wrench, Activity, ChevronRight, Loader2, CheckCircle2, XCircle, Clock, Sparkles } from "lucide-react";
+import React, { useState, useMemo, useRef } from "react";
+import Papa from "papaparse";
+import { Phone, PhoneCall, AlertTriangle, ShieldAlert, FileText, Wrench, Activity, ChevronRight, Loader2, CheckCircle2, XCircle, Clock, Sparkles, Upload, RotateCcw, Download } from "lucide-react";
 
 // ---------------------------------------------------------------------------
 // MOCK DATA — represents the 7 active clients a Domu TAM manages
@@ -238,9 +239,190 @@ ${rawScript}
 // ---------------------------------------------------------------------------
 // TASK 2 — Call Outcomes Dashboard (mock data, computed client-side)
 // ---------------------------------------------------------------------------
+// Anchor date for the mock dataset — CLIENTS totals represent the 7-day
+// period ending on this date. Adjusting the date range scales the mock
+// numbers proportionally so the dashboard reacts to the selected window.
+const DATA_ANCHOR_DATE = new Date("2026-07-13T00:00:00");
+const DATA_BASE_DAYS = 7;
+
+const DATE_PRESETS = [
+  { label: "Last 7 days", days: 7 },
+  { label: "Last 14 days", days: 14 },
+  { label: "Last 30 days", days: 30 },
+];
+
+function toDateInputValue(d) {
+  return d.toISOString().slice(0, 10);
+}
+
+function formatDateLabel(d) {
+  return d.toLocaleDateString("en-US", { month: "short", day: "numeric" });
+}
+
+// Expected CSV columns (case-insensitive, flexible on naming):
+// client/name, calls, answered, paid, failed, flagged
+const REQUIRED_CSV_FIELDS = {
+  name: ["client", "name", "client name"],
+  calls: ["calls", "total calls"],
+  answered: ["answered", "calls answered"],
+  paid: ["paid", "payments", "led to payment"],
+  failed: ["failed", "failures"],
+  flagged: ["flagged", "flagged for qa", "qa flagged"],
+};
+
+function findField(row, aliases) {
+  const keys = Object.keys(row);
+  for (const alias of aliases) {
+    const match = keys.find((k) => k.trim().toLowerCase() === alias);
+    if (match) return match;
+  }
+  return null;
+}
+
+function parseClientCSV(rows) {
+  if (!rows.length) throw new Error("The CSV file appears to be empty.");
+  const sample = rows[0];
+  const fieldMap = {};
+  for (const [field, aliases] of Object.entries(REQUIRED_CSV_FIELDS)) {
+    const match = findField(sample, aliases);
+    if (!match) {
+      throw new Error(
+        `Could not find a column for "${field}". Expected one of: ${aliases.join(", ")}.`
+      );
+    }
+    fieldMap[field] = match;
+  }
+
+  return rows.map((row, i) => {
+    const name = String(row[fieldMap.name] ?? "").trim();
+    if (!name) throw new Error(`Row ${i + 1} is missing a client name.`);
+
+    const nums = {};
+    for (const field of ["calls", "answered", "paid", "failed", "flagged"]) {
+      const raw = row[fieldMap[field]];
+      const val = Number(String(raw).replace(/,/g, "").trim());
+      if (raw === undefined || raw === "" || Number.isNaN(val)) {
+        throw new Error(`Row ${i + 1} ("${name}") has an invalid value for "${field}": "${raw}"`);
+      }
+      nums[field] = val;
+    }
+
+    return {
+      id: name.toLowerCase().replace(/[^a-z0-9]+/g, "-"),
+      name,
+      vertical: "",
+      calls: nums.calls,
+      answered: nums.answered,
+      paid: nums.paid,
+      failed: nums.failed,
+      flagged: nums.flagged,
+    };
+  });
+}
+
+const SAMPLE_CSV = `client,calls,answered,paid,failed,flagged
+Meridian Credit Union,1842,1190,412,87,6
+Harborline Financial,2310,1502,601,143,11
+BrightPay Servicing,986,640,198,52,3
+Vantex Recovery Group,3120,1998,733,201,14
+Solara Home Loans,754,511,249,29,2
+Keystone Utilities Billing,1655,1120,588,61,5
+NovaPoint Card Services,2788,1804,690,176,9
+`;
+
+function downloadSampleCSV() {
+  const blob = new Blob([SAMPLE_CSV], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = "domu-call-outcomes-sample.csv";
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
 function OutcomesDashboard() {
+  const [endDate, setEndDate] = useState(toDateInputValue(DATA_ANCHOR_DATE));
+  const [startDate, setStartDate] = useState(
+    toDateInputValue(new Date(DATA_ANCHOR_DATE.getTime() - (DATA_BASE_DAYS - 1) * 86400000))
+  );
+  const [activePreset, setActivePreset] = useState(7);
+
+  const [csvClients, setCsvClients] = useState(null); // null = using sample data
+  const [csvFileName, setCsvFileName] = useState("");
+  const [csvError, setCsvError] = useState("");
+  const fileInputRef = useRef(null);
+
+  const handleCSVUpload = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setCsvError("");
+    Papa.parse(file, {
+      header: true,
+      skipEmptyLines: true,
+      complete: (results) => {
+        try {
+          const parsed = parseClientCSV(results.data);
+          setCsvClients(parsed);
+          setCsvFileName(file.name);
+        } catch (err) {
+          setCsvError(err.message);
+          setCsvClients(null);
+          setCsvFileName("");
+        }
+      },
+      error: (err) => {
+        setCsvError("Could not read the file: " + err.message);
+      },
+    });
+    // allow re-uploading the same filename later
+    e.target.value = "";
+  };
+
+  const clearCSV = () => {
+    setCsvClients(null);
+    setCsvFileName("");
+    setCsvError("");
+  };
+
+  const applyPreset = (days) => {
+    const end = DATA_ANCHOR_DATE;
+    const start = new Date(end.getTime() - (days - 1) * 86400000);
+    setStartDate(toDateInputValue(start));
+    setEndDate(toDateInputValue(end));
+    setActivePreset(days);
+  };
+
+  const dayCount = useMemo(() => {
+    const start = new Date(startDate + "T00:00:00");
+    const end = new Date(endDate + "T00:00:00");
+    const diff = Math.round((end - start) / 86400000) + 1;
+    return diff > 0 ? diff : 1;
+  }, [startDate, endDate]);
+
+  const scale = dayCount / DATA_BASE_DAYS;
+  const usingCSV = csvClients !== null;
+
+  // Scaled per-client rows for the selected date range. Mock data only
+  // stores one 7-day snapshot, so we scale proportionally to approximate
+  // what a real query against a call log warehouse would return. Uploaded
+  // CSV data is treated as real/authoritative and is shown as-is, without
+  // date-range scaling.
+  const scaledClients = useMemo(() => {
+    if (usingCSV) return csvClients;
+    return CLIENTS.map((c) => ({
+      ...c,
+      calls: Math.round(c.calls * scale),
+      answered: Math.round(c.answered * scale),
+      paid: Math.round(c.paid * scale),
+      failed: Math.round(c.failed * scale),
+      flagged: Math.round(c.flagged * scale),
+    }));
+  }, [scale, usingCSV, csvClients]);
+
   const totals = useMemo(() => {
-    return CLIENTS.reduce(
+    return scaledClients.reduce(
       (acc, c) => {
         acc.calls += c.calls;
         acc.answered += c.answered;
@@ -251,7 +433,7 @@ function OutcomesDashboard() {
       },
       { calls: 0, answered: 0, paid: 0, failed: 0, flagged: 0 }
     );
-  }, []);
+  }, [scaledClients]);
 
   const answerRate = ((totals.answered / totals.calls) * 100).toFixed(1);
   const conversionRate = ((totals.paid / totals.answered) * 100).toFixed(1);
@@ -264,10 +446,13 @@ function OutcomesDashboard() {
     setLoading(true);
     setSummary("");
     try {
-      const table = CLIENTS.map(
+      const table = scaledClients.map(
         (c) => `${c.name}: ${c.calls} calls, ${c.answered} answered, ${c.paid} paid, ${c.failed} failed, ${c.flagged} flagged for QA`
       ).join("\n");
-      const prompt = `Here is this week's call outcome data across our 7 active clients:\n\n${table}\n\nAggregate totals: ${totals.calls} calls, ${totals.answered} answered (${answerRate}%), ${totals.paid} led to payment (${conversionRate}% of answered), ${totals.failed} failed (${failRate}%).\n\nWrite a concise executive summary (5-7 sentences) for a weekly ops review. Call out the strongest and weakest performing clients by conversion rate, any client with a fail rate that stands out, and one clear recommendation.`;
+      const periodLabel = usingCSV
+        ? `the uploaded file "${csvFileName}"`
+        : `${formatDateLabel(new Date(startDate + "T00:00:00"))} – ${formatDateLabel(new Date(endDate + "T00:00:00"))} (${dayCount} days)`;
+      const prompt = `Here is call outcome data across our active clients for ${periodLabel}:\n\n${table}\n\nAggregate totals: ${totals.calls} calls, ${totals.answered} answered (${answerRate}%), ${totals.paid} led to payment (${conversionRate}% of answered), ${totals.failed} failed (${failRate}%).\n\nWrite a concise executive summary (5-7 sentences) for an ops review covering this data. Call out the strongest and weakest performing clients by conversion rate, any client with a fail rate that stands out, and one clear recommendation.`;
       const result = await callClaude(prompt);
       setSummary(result);
     } catch (e) {
@@ -279,6 +464,104 @@ function OutcomesDashboard() {
 
   return (
     <div>
+      <Card style={{ marginBottom: 20 }}>
+        <SectionLabel>Data source</SectionLabel>
+        <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 12 }}>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".csv"
+            onChange={handleCSVUpload}
+            style={{ display: "none" }}
+          />
+          <Button onClick={() => fileInputRef.current?.click()} style={{ padding: "8px 14px" }}>
+            <Upload size={14} /> Upload CSV
+          </Button>
+          <Button variant="ghost" onClick={downloadSampleCSV} style={{ padding: "8px 14px" }}>
+            <Download size={14} /> Download sample CSV
+          </Button>
+          {usingCSV && (
+            <>
+              <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                <StatusDot tone="good" />
+                <Mono style={{ fontSize: 12, color: "#D8DAE3" }}>{csvFileName}</Mono>
+                <span style={{ fontSize: 11.5, color: "#565C70" }}>({csvClients.length} clients loaded)</span>
+              </div>
+              <Button variant="ghost" onClick={clearCSV} style={{ padding: "6px 12px", fontSize: 12 }}>
+                <RotateCcw size={13} /> Revert to sample data
+              </Button>
+            </>
+          )}
+        </div>
+        {csvError && (
+          <div style={{ marginTop: 12, fontSize: 12.5, color: "#EF6461", lineHeight: 1.5 }}>{csvError}</div>
+        )}
+        {!usingCSV && !csvError && (
+          <div style={{ marginTop: 10, fontSize: 12, color: "#565C70", lineHeight: 1.5 }}>
+            Expected columns: <Mono>client, calls, answered, paid, failed, flagged</Mono>. Download the sample above to see the exact format.
+          </div>
+        )}
+      </Card>
+
+      <Card style={{ marginBottom: 20, opacity: usingCSV ? 0.5 : 1 }}>
+        <SectionLabel>Date range {usingCSV && "(disabled — showing uploaded CSV totals as-is)"}</SectionLabel>
+        <fieldset disabled={usingCSV} style={{ border: "none", padding: 0, margin: 0 }}>
+        <div style={{ display: "flex", flexWrap: "wrap", alignItems: "center", gap: 10 }}>
+          {DATE_PRESETS.map((p) => (
+            <Button
+              key={p.label}
+              variant={activePreset === p.days ? "primary" : "ghost"}
+              onClick={() => applyPreset(p.days)}
+              style={{ padding: "7px 12px", fontSize: 12 }}
+            >
+              {p.label}
+            </Button>
+          ))}
+          <div style={{ width: 1, height: 22, background: "#262B3A", margin: "0 4px" }} />
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <input
+              type="date"
+              value={startDate}
+              max={endDate}
+              onChange={(e) => {
+                setStartDate(e.target.value);
+                setActivePreset(null);
+              }}
+              style={{
+                background: "#0D0F16",
+                border: "1px solid #262B3A",
+                borderRadius: 6,
+                color: "#D8DAE3",
+                fontFamily: "'IBM Plex Mono', monospace",
+                fontSize: 12,
+                padding: "7px 10px",
+              }}
+            />
+            <span style={{ color: "#565C70", fontSize: 12 }}>to</span>
+            <input
+              type="date"
+              value={endDate}
+              min={startDate}
+              onChange={(e) => {
+                setEndDate(e.target.value);
+                setActivePreset(null);
+              }}
+              style={{
+                background: "#0D0F16",
+                border: "1px solid #262B3A",
+                borderRadius: 6,
+                color: "#D8DAE3",
+                fontFamily: "'IBM Plex Mono', monospace",
+                fontSize: 12,
+                padding: "7px 10px",
+              }}
+            />
+          </div>
+          <Mono style={{ fontSize: 11.5, color: "#565C70", marginLeft: "auto" }}>{dayCount} day{dayCount !== 1 ? "s" : ""} selected</Mono>
+        </div>
+        </fieldset>
+      </Card>
+
       <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 14, marginBottom: 20 }}>
         {[
           { label: "Total calls", value: totals.calls.toLocaleString(), tone: "idle" },
@@ -310,7 +593,7 @@ function OutcomesDashboard() {
               </tr>
             </thead>
             <tbody>
-              {CLIENTS.map((c) => {
+              {scaledClients.map((c) => {
                 const conv = ((c.paid / c.answered) * 100).toFixed(1);
                 const convTone = conv > 33 ? "good" : conv > 28 ? "warn" : "bad";
                 return (
@@ -334,7 +617,7 @@ function OutcomesDashboard() {
 
       <Card>
         <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 14 }}>
-          <SectionLabel>AI-generated weekly summary</SectionLabel>
+          <SectionLabel>AI-generated summary for selected range</SectionLabel>
           <Button onClick={generateSummary} disabled={loading} variant="ghost">
             {loading ? <Loader2 size={14} className="spin" /> : <Sparkles size={14} />}
             {loading ? "Writing..." : "Generate summary"}
@@ -343,7 +626,7 @@ function OutcomesDashboard() {
         {summary ? (
           <div style={{ whiteSpace: "pre-wrap", fontSize: 13.5, lineHeight: 1.7, color: "#D8DAE3" }}>{summary}</div>
         ) : (
-          <div style={{ color: "#565C70", fontSize: 13 }}>Click "Generate summary" to have Claude draft the exec summary from the table above.</div>
+          <div style={{ color: "#565C70", fontSize: 13 }}>Click "Generate summary" to have Claude draft the summary for the selected date range.</div>
         )}
       </Card>
     </div>
@@ -366,6 +649,7 @@ function FlaggedCallTriage() {
   const [calls, setCalls] = useState(FLAGGED_CALLS);
   const [loadingId, setLoadingId] = useState(null);
   const [pickerOpenId, setPickerOpenId] = useState(null);
+  const [customText, setCustomText] = useState("");
 
   const categorize = async (call) => {
     setLoadingId(call.id);
@@ -393,8 +677,11 @@ QA note: ${call.excerpt}`;
   };
 
   const setManualCategory = (call, label) => {
-    setCalls((prev) => prev.map((c) => (c.id === call.id ? { ...c, category: label, source: "manual" } : c)));
+    const trimmed = label.trim();
+    if (!trimmed) return;
+    setCalls((prev) => prev.map((c) => (c.id === call.id ? { ...c, category: trimmed, source: "manual" } : c)));
     setPickerOpenId(null);
+    setCustomText("");
   };
 
   const clearCategory = (call) => {
@@ -468,7 +755,10 @@ QA note: ${call.excerpt}`;
                     </Button>
                     <Button
                       variant="ghost"
-                      onClick={() => setPickerOpenId(pickerOpenId === call.id ? null : call.id)}
+                      onClick={() => {
+                        setCustomText("");
+                        setPickerOpenId(pickerOpenId === call.id ? null : call.id);
+                      }}
                       style={{ padding: "5px 10px", fontSize: 11.5 }}
                     >
                       Set manually
@@ -488,7 +778,7 @@ QA note: ${call.excerpt}`;
                       borderRadius: 8,
                       padding: 6,
                       zIndex: 10,
-                      minWidth: 220,
+                      minWidth: 240,
                       boxShadow: "0 8px 24px rgba(0,0,0,0.4)",
                     }}
                   >
@@ -513,6 +803,40 @@ QA note: ${call.excerpt}`;
                         {opt.label}
                       </div>
                     ))}
+                    <div style={{ borderTop: "1px solid #2E3345", marginTop: 4, paddingTop: 8, paddingLeft: 10, paddingRight: 10, paddingBottom: 8 }}>
+                      <div style={{ fontSize: 10.5, color: "#565C70", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 6 }}>
+                        Or type a custom category
+                      </div>
+                      <div style={{ display: "flex", gap: 6 }}>
+                        <input
+                          type="text"
+                          value={customText}
+                          onChange={(e) => setCustomText(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") setManualCategory(call, customText);
+                          }}
+                          placeholder="e.g. Consent not confirmed"
+                          autoFocus
+                          style={{
+                            flex: 1,
+                            background: "#0D0F16",
+                            border: "1px solid #262B3A",
+                            borderRadius: 6,
+                            color: "#D8DAE3",
+                            fontSize: 12.5,
+                            padding: "6px 8px",
+                            minWidth: 0,
+                          }}
+                        />
+                        <Button
+                          onClick={() => setManualCategory(call, customText)}
+                          disabled={!customText.trim()}
+                          style={{ padding: "6px 10px", fontSize: 11.5 }}
+                        >
+                          Set
+                        </Button>
+                      </div>
+                    </div>
                   </div>
                 )}
               </div>
