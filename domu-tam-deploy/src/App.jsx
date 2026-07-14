@@ -353,12 +353,23 @@ function OutcomesDashboard() {
 // ---------------------------------------------------------------------------
 // TASK 3-lite is folded into flagged call triage below (categorization)
 // ---------------------------------------------------------------------------
+// Manual category options a TAM can pick by hand, each with its own color.
+// "source" tracks whether a call's category came from Claude or a human,
+// shown as a small label next to the category tag.
+const MANUAL_CATEGORIES = [
+  { label: "Wrong outcome recorded", color: "#F2A93C" },
+  { label: "Agent said something incorrect", color: "#EF6461" },
+  { label: "Call dropped too early", color: "#7C8CF8" },
+];
+
 function FlaggedCallTriage() {
   const [calls, setCalls] = useState(FLAGGED_CALLS);
   const [loadingId, setLoadingId] = useState(null);
+  const [pickerOpenId, setPickerOpenId] = useState(null);
 
   const categorize = async (call) => {
     setLoadingId(call.id);
+    setPickerOpenId(null);
     try {
       const prompt = `A voice agent call was flagged for QA review. Categorize what went wrong into exactly one of these three categories: "Wrong outcome recorded", "Agent said something incorrect", or "Call dropped too early". Respond with ONLY the category label, nothing else.
 
@@ -367,9 +378,9 @@ Client: ${call.client}
 Duration: ${call.duration}
 QA note: ${call.excerpt}`;
       const result = await callClaude(prompt);
-      setCalls((prev) => prev.map((c) => (c.id === call.id ? { ...c, category: result.trim() } : c)));
+      setCalls((prev) => prev.map((c) => (c.id === call.id ? { ...c, category: result.trim(), source: "ai" } : c)));
     } catch (e) {
-      setCalls((prev) => prev.map((c) => (c.id === call.id ? { ...c, category: "API unreachable" } : c)));
+      setCalls((prev) => prev.map((c) => (c.id === call.id ? { ...c, category: "API unreachable", source: "ai" } : c)));
     } finally {
       setLoadingId(null);
     }
@@ -381,12 +392,27 @@ QA note: ${call.excerpt}`;
     }
   };
 
+  const setManualCategory = (call, label) => {
+    setCalls((prev) => prev.map((c) => (c.id === call.id ? { ...c, category: label, source: "manual" } : c)));
+    setPickerOpenId(null);
+  };
+
+  const clearCategory = (call) => {
+    setCalls((prev) => prev.map((c) => (c.id === call.id ? { ...c, category: null, source: null } : c)));
+    setPickerOpenId(null);
+  };
+
   const categoryTone = (cat) => {
     if (!cat) return "idle";
     if (cat.includes("dropped")) return "bad";
     if (cat.includes("incorrect")) return "bad";
     if (cat.includes("outcome")) return "warn";
     return "idle";
+  };
+
+  const categoryColor = (cat) => {
+    const match = MANUAL_CATEGORIES.find((m) => m.label === cat);
+    return match ? match.color : "#8A8FA3";
   };
 
   return (
@@ -399,8 +425,8 @@ QA note: ${call.excerpt}`;
       </div>
       <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
         {calls.map((call) => (
-          <div key={call.id} style={{ border: "1px solid #262B3A", borderRadius: 8, padding: 14, background: "#12151F" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8 }}>
+          <div key={call.id} style={{ border: "1px solid #262B3A", borderRadius: 8, padding: 14, background: "#12151F", position: "relative" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 8, flexWrap: "wrap", gap: 8 }}>
               <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
                 <Mono style={{ color: "#7C8CF8", fontSize: 12.5 }}>{call.id}</Mono>
                 <span style={{ color: "#8A8FA3", fontSize: 12.5 }}>{call.client}</span>
@@ -408,17 +434,88 @@ QA note: ${call.excerpt}`;
                   <Clock size={11} /> {call.duration}
                 </span>
               </div>
-              {call.category ? (
-                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                  <StatusDot tone={categoryTone(call.category)} />
-                  <Mono style={{ fontSize: 11.5, color: "#D8DAE3" }}>{call.category}</Mono>
-                </div>
-              ) : (
-                <Button variant="ghost" onClick={() => categorize(call)} disabled={loadingId === call.id} style={{ padding: "5px 10px", fontSize: 11.5 }}>
-                  {loadingId === call.id ? <Loader2 size={12} className="spin" /> : null}
-                  {loadingId === call.id ? "..." : "Categorize"}
-                </Button>
-              )}
+
+              <div style={{ display: "flex", alignItems: "center", gap: 8, position: "relative" }}>
+                {call.category ? (
+                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <span
+                      style={{
+                        display: "inline-block",
+                        width: 8,
+                        height: 8,
+                        borderRadius: "50%",
+                        background: categoryColor(call.category),
+                        flexShrink: 0,
+                      }}
+                    />
+                    <Mono style={{ fontSize: 11.5, color: "#D8DAE3" }}>{call.category}</Mono>
+                    <span style={{ fontSize: 10, color: "#565C70", textTransform: "uppercase", letterSpacing: "0.04em" }}>
+                      {call.source === "manual" ? "· manual" : call.source === "ai" ? "· ai" : ""}
+                    </span>
+                    <button
+                      onClick={() => clearCategory(call)}
+                      title="Clear category"
+                      style={{ background: "none", border: "none", color: "#565C70", cursor: "pointer", padding: 2, display: "flex" }}
+                    >
+                      <XCircle size={13} />
+                    </button>
+                  </div>
+                ) : (
+                  <>
+                    <Button variant="ghost" onClick={() => categorize(call)} disabled={loadingId === call.id} style={{ padding: "5px 10px", fontSize: 11.5 }}>
+                      {loadingId === call.id ? <Loader2 size={12} className="spin" /> : <Sparkles size={12} />}
+                      {loadingId === call.id ? "..." : "AI categorize"}
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      onClick={() => setPickerOpenId(pickerOpenId === call.id ? null : call.id)}
+                      style={{ padding: "5px 10px", fontSize: 11.5 }}
+                    >
+                      Set manually
+                    </Button>
+                  </>
+                )}
+
+                {pickerOpenId === call.id && (
+                  <div
+                    style={{
+                      position: "absolute",
+                      top: "100%",
+                      right: 0,
+                      marginTop: 6,
+                      background: "#1B1F2E",
+                      border: "1px solid #2E3345",
+                      borderRadius: 8,
+                      padding: 6,
+                      zIndex: 10,
+                      minWidth: 220,
+                      boxShadow: "0 8px 24px rgba(0,0,0,0.4)",
+                    }}
+                  >
+                    {MANUAL_CATEGORIES.map((opt) => (
+                      <div
+                        key={opt.label}
+                        onClick={() => setManualCategory(call, opt.label)}
+                        style={{
+                          display: "flex",
+                          alignItems: "center",
+                          gap: 8,
+                          padding: "8px 10px",
+                          borderRadius: 6,
+                          cursor: "pointer",
+                          fontSize: 12.5,
+                          color: "#D8DAE3",
+                        }}
+                        onMouseEnter={(e) => (e.currentTarget.style.background = "#262B3A")}
+                        onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                      >
+                        <span style={{ width: 8, height: 8, borderRadius: "50%", background: opt.color, flexShrink: 0 }} />
+                        {opt.label}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
             <div style={{ fontSize: 13, color: "#B8BCC8", lineHeight: 1.5 }}>{call.excerpt}</div>
           </div>
@@ -553,11 +650,11 @@ function Roadmap() {
   const items = [
     {
       title: "Feature request → engineering ticket",
-      desc: "Client asks for a new payment option (e.g. Apple Pay). Tool would take the raw request + client context and generate a structured ticket: title, description, acceptance criteria, affected client(s), priority, and a suggested Jira/Linear label — via the same Claude API pattern used above.",
+      desc: "Works the same way as the Compliance tab: a TAM pastes in the client's raw feature request (e.g. \"add Apple Pay as a payment option\") plus any relevant context, and Claude turns it into a structured ticket — title, description, acceptance criteria, affected client(s), and priority — formatted as plain text that pastes directly into a Jira card or kanban board column, no reformatting needed. Same underlying pattern as the compliance writeup, just pointed at a different prompt.",
     },
     {
-      title: "Calling-hours + holiday compliance check",
-      desc: "Tool would ingest each client's call attempt log (timestamp + debtor region) alongside a maintained table of state-level permitted calling windows and federal/state holidays, then flag any attempt outside the allowed window. This is a deterministic rules check, not an LLM task — best built as a scheduled batch job against the call log warehouse, with flagged rows surfaced back into the Flagged Calls panel.",
+      title: "Calling hours & holiday check",
+      desc: "In plain terms: every state has its own rules about what hours of the day (and which holidays) it's legal to call someone about a debt. This feature would automatically check every call Domu's agents make against those rules — comparing the time the call was placed, the debtor's state, and a maintained calendar of holidays — and flag any call that happened outside the allowed window, before it becomes a compliance problem. Unlike the other AI-powered features in this tool, this one doesn't need Claude at all — it's just a checklist of rules being checked automatically, so it runs on its own schedule in the background and any flagged calls would show up right in the Flagged Call Triage tab alongside everything else.",
     },
   ];
   return (
